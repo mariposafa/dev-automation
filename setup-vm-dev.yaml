@@ -5,7 +5,8 @@
 
   vars:
     git_repo_url: "https://github.com/ansible/ansible-examples.git"
-    git_dest: "/home/{{ ansible_user }}/repo"
+    # Default kosong memungkinkan validasi melaporkan ansible_user yang belum diisi.
+    git_dest: "/home/{{ ansible_user | default('') }}/repo"
 
     podman_registry_url: "quay.io"
     podman_registry_username: ""
@@ -36,22 +37,25 @@
         - name: Validate required strings
           ansible.builtin.assert:
             that:
-              - item is string
-              - item | trim | length > 0
+              - vars[item] is defined
+              - vars[item] is string
+              - vars[item] | trim | length > 0
             quiet: true
+          # Loop hanya nama variabel; hasil gagal dapat menyebut nama tanpa nilainya.
+          register: required_input_checks
           loop:
-            - "{{ ansible_user | default('') }}"
-            - "{{ git_repo_url }}"
-            - "{{ git_dest }}"
-            - "{{ podman_registry_url }}"
-            - "{{ podman_registry_username }}"
-            - "{{ podman_registry_password }}"
-            - "{{ oc_api_url }}"
-            - "{{ oc_token }}"
-            - "{{ git_version }}"
-            - "{{ podman_version }}"
-            - "{{ python_version }}"
-            - "{{ oc_version }}"
+            - ansible_user
+            - git_repo_url
+            - git_dest
+            - podman_registry_url
+            - podman_registry_username
+            - podman_registry_password
+            - oc_api_url
+            - oc_token
+            - git_version
+            - podman_version
+            - python_version
+            - oc_version
 
         - name: Validate URLs destination and credentials
           ansible.builtin.assert:
@@ -82,6 +86,11 @@
         - name: Stop on invalid inputs
           ansible.builtin.fail:
             msg: >-
+              Input wajib kosong/tidak sesuai tipe:
+              {{ required_input_checks.results | default([])
+                 | selectattr('failed', 'defined') | selectattr('failed')
+                 | map(attribute='item') | list | join(', ')
+                 | default('tidak ada; periksa format input berikut', true) }}.
               Input tidak valid. Periksa ansible_user, URL Git HTTPS tanpa kredensial,
               path absolut, hostname registry, username/password registry,
               URL API OpenShift asli, token, dan versi X.Y.Z. Semua wajib diisi.
