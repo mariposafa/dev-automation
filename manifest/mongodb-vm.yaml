@@ -1,0 +1,42 @@
+# Hanya jalankan setelah MongoDB VM siap dan bind ke 0.0.0.0 di jaringan privat.
+# Selector harus cocok label Pod virt-launcher VM target.
+apiVersion: v1
+kind: Service
+metadata:
+  name: mongodb-vm
+  namespace: nabilahsafa-dev
+spec:
+  selector:
+    kubevirt.io/domain: fedora-purple-pike-83
+  ports:
+    - name: mongodb
+      port: 27017
+      targetPort: 27017
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: mongodb-vm-ingress
+  namespace: nabilahsafa-dev
+spec:
+  podSelector:
+    matchLabels:
+      kubevirt.io/domain: fedora-purple-pike-83
+  policyTypes: [Ingress]
+  ingress:
+    # Pertahankan SSH VM dari Pod cluster (termasuk execution environment AAP).
+    - from:
+        - namespaceSelector: {}
+      ports:
+        - protocol: TCP
+          port: 22
+    - from:
+        - podSelector:
+            matchLabels:
+              bootcamp: its-mlpt
+        - podSelector:
+            matchLabels:
+              app: profiling
+      ports:
+        - protocol: TCP
+          port: 27017

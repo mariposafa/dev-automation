@@ -1,0 +1,162 @@
+---
+# AAP: Inventory VM yang sudah ada; Machine Credential dengan sudo.
+# Password wajib dari Survey Password atau Ansible Vault, bukan repository.
+- name: Provision self-managed MongoDB on an existing Fedora VM
+  hosts: all
+  become: true
+  any_errors_fatal: true
+  vars:
+    mongodb_image: docker.io/library/mongo:8.0.28
+    mongodb_database: bootcamp
+    mongodb_admin_user: bootcamp_admin
+    mongodb_app_user: bootcamp_app
+    mongodb_admin_password: ""
+    mongodb_app_password: ""
+    # Untuk akses OpenShift via Service VM, override ke 0.0.0.0 di jaringan privat.
+    mongodb_bind_ip: "127.0.0.1"
+    mongodb_port: 27017
+
+  pre_tasks:
+    - name: Validate supported VM
+      ansible.builtin.assert:
+        that:
+          - ansible_facts['os_family'] == 'RedHat'
+          - ansible_facts['architecture'] == 'x86_64'
+          - ansible_facts['service_mgr'] == 'systemd'
+        fail_msg: "Gunakan VM Fedora/RHEL x86_64 dengan systemd dan sudo."
+
+    - name: Validate MongoDB settings and passwords
+      ansible.builtin.assert:
+        that:
+          - mongodb_image is match('^docker.io/library/mongo:[0-9]+\.[0-9]+\.[0-9]+$')
+          - mongodb_database is match('^[A-Za-z][A-Za-z0-9_-]{0,62}$')
+          - mongodb_database not in ['admin', 'local', 'config']
+          - mongodb_admin_user is match('^[A-Za-z][A-Za-z0-9_-]+$')
+          - mongodb_app_user is match('^[A-Za-z][A-Za-z0-9_-]+$')
+          - mongodb_admin_user != mongodb_app_user
+          - mongodb_admin_password is string
+          - mongodb_app_password is string
+          - mongodb_admin_password | length >= 16
+          - mongodb_app_password | length >= 16
+          - mongodb_admin_password != mongodb_app_password
+          - mongodb_bind_ip is match('^[0-9]{1,3}(\.[0-9]{1,3}){3}$')
+          - mongodb_port | int >= 1024
+          - mongodb_port | int <= 65535
+        fail_msg: "Periksa database, user, image versi pasti, port, serta dua password berbeda minimal 16 karakter."
+      no_log: true
+
+  tasks:
+    - name: Install Podman
+      ansible.builtin.dnf:
+        name: podman
+        state: present
+
+    - name: Verify Quadlet compatible Podman version
+      ansible.builtin.command: podman --version
+      register: podman_version_output
+      changed_when: false
+      failed_when: podman_version_output.stdout.split()[-1] is version('4.4', '<')
+
+    - name: Create protected MongoDB configuration directory
+      ansible.builtin.file:
+        path: /etc/bootcamp-mongodb
+        state: directory
+        owner: root
+        group: root
+        mode: "0700"
+
+    - name: Write bootstrap secrets in protected directory
+      ansible.builtin.copy:
+        dest: "/etc/bootcamp-mongodb/{{ item.name }}"
+        content: "{{ item.value }}"
+        owner: root
+        group: root
+        # Directory is root-only. Container's mongodb UID must read mounted files.
+        mode: "0444"
+      loop:
+        - name: admin-user
+          value: "{{ mongodb_admin_user }}"
+        - name: admin-password
+          value: "{{ mongodb_admin_password }}"
+        - name: credentials.json
+          value: "{{ {'admin_user': mongodb_admin_user, 'admin_password': mongodb_admin_password, 'database': mongodb_database, 'app_user': mongodb_app_user, 'app_password': mongodb_app_password} | to_json }}"
+      no_log: true
+      diff: false
+
+    - name: Install application user setup and verification script
+      ansible.builtin.copy:
+        src: files/ensure-mongodb-user.js
+        dest: /etc/bootcamp-mongodb/ensure-user.js
+        owner: root
+        group: root
+        mode: "0444"
+
+    - name: Ensure Quadlet directory exists
+      ansible.builtin.file:
+        path: /etc/containers/systemd
+        state: directory
+        mode: "0755"
+
+    - name: Install persistent MongoDB volume definition
+      ansible.builtin.copy:
+        dest: /etc/containers/systemd/bootcamp-mongodb-data.volume
+        mode: "0644"
+        content: |
+          [Volume]
+          VolumeName=bootcamp-mongodb-data
+      notify: Restart MongoDB
+
+    - name: Install MongoDB Quadlet service
+      ansible.builtin.template:
+        src: mongodb.container.j2
+        dest: /etc/containers/systemd/bootcamp-mongodb.container
+        mode: "0644"
+      notify: Restart MongoDB
+
+    - name: Start MongoDB after changed definitions
+      ansible.builtin.meta: flush_handlers
+
+    - name: Ensure MongoDB is running
+      ansible.builtin.systemd_service:
+        name: bootcamp-mongodb.service
+        daemon_reload: true
+        state: started
+      # Quadlet uses [Install] for startup; generated units cannot be enabled directly.
+
+    - name: Wait for MongoDB TCP port
+      ansible.builtin.wait_for:
+        host: "{{ '127.0.0.1' if mongodb_bind_ip == '0.0.0.0' else mongodb_bind_ip }}"
+        port: "{{ mongodb_port }}"
+        timeout: 120
+
+    - name: Create scoped application user and verify authentication
+      ansible.builtin.command:
+        argv:
+          - podman
+          - exec
+          - bootcamp-mongodb
+          - mongosh
+          - --quiet
+          - --file
+          - /bootstrap/ensure-user.js
+      register: mongodb_user_result
+      until: mongodb_user_result.rc == 0
+      retries: 12
+      delay: 5
+      changed_when: "'CREATED' in mongodb_user_result.stdout"
+      no_log: true
+
+    - name: Report deployment without credentials
+      ansible.builtin.debug:
+        msg: >-
+          MongoDB berjalan dengan autentikasi dan volume bootcamp-mongodb-data.
+          User aplikasi hanya readWrite di {{ mongodb_database }}.
+          Bind {{ mongodb_bind_ip }}:{{ mongodb_port }}. Password/URI tidak dicetak.
+          Database lama tidak dihapus dan Atlas tidak dimigrasikan otomatis.
+
+  handlers:
+    - name: Restart MongoDB
+      ansible.builtin.systemd_service:
+        name: bootcamp-mongodb.service
+        daemon_reload: true
+        state: restarted

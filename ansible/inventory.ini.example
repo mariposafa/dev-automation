@@ -1,0 +1,3 @@
+[mongodb]
+# IP Pod VM dapat berubah. Utamakan hostname Service SSH yang stabil jika tersedia.
+devvm ansible_host=GANTI_IP_VM ansible_user=fedora

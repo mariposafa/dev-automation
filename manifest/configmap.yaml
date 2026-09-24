@@ -1,0 +1,9 @@
+# D2: konfigurasi biasa, tanpa password.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: transaction-config
+  namespace: nabilahsafa-dev
+data:
+  MONGODB_DATABASE: bootcamp_profiling_clean_01
+  PROFILING_WINDOW_MONTHS: "3"

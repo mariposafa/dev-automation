@@ -1,0 +1,191 @@
+---
+- name: Ensure required tooling is installed, validated and logged in
+  hosts: all
+  any_errors_fatal: true
+
+  vars:
+    git_repo_url: "https://github.com/ansible/ansible-examples.git"
+    # Default kosong memungkinkan validasi melaporkan ansible_user yang belum diisi.
+    git_dest: "/home/{{ ansible_user | default('') }}/repo"
+
+    podman_registry_url: "quay.io"
+    podman_registry_username: ""
+    podman_registry_password: ""
+
+    oc_api_url: "https://api.example.com:6443"
+    oc_token: ""
+    # Versi dari log VM; harus tersedia di repository OS target.
+    git_version: "2.55.0"
+    podman_version: "5.8.1"
+    python_version: "3.14.3"
+    oc_version: "4.22.14"
+    oc_cli_download_url: "https://mirror.openshift.com/pub/openshift-v4/x86_64/clients/ocp/{{ oc_version }}/openshift-client-linux.tar.gz"
+
+  # Isi kredensial melalui AAP password Survey / Vault, bukan GitHub.
+  # Validasi format tidak membuktikan kredensial diterima server.
+  pre_tasks:
+    - name: Validate target platform
+      ansible.builtin.assert:
+        that:
+          - ansible_facts['os_family'] == 'RedHat'
+          - ansible_facts['architecture'] == 'x86_64'
+          - ansible_facts['pkg_mgr'] in ['dnf', 'dnf5']
+        fail_msg: "Target harus VM keluarga RedHat x86_64 dengan DNF."
+
+    - name: Validate required inputs privately
+      block:
+        - name: Validate required strings
+          ansible.builtin.assert:
+            that:
+              - vars[item] is defined
+              - vars[item] is string
+              - vars[item] | trim | length > 0
+            quiet: true
+          # Loop hanya nama variabel; hasil gagal dapat menyebut nama tanpa nilainya.
+          register: required_input_checks
+          loop:
+            - ansible_user
+            - git_repo_url
+            - git_dest
+            - podman_registry_url
+            - podman_registry_username
+            - podman_registry_password
+            - oc_api_url
+            - oc_token
+            - git_version
+            - podman_version
+            - python_version
+            - oc_version
+
+        - name: Validate URLs destination and credentials
+          ansible.builtin.assert:
+            that:
+              - git_repo_url is match('^https://[A-Za-z0-9.-]+(?::[0-9]+)?/[^\s@?#]+$')
+              - git_dest is match('^/[^\s]+$')
+              - git_dest != '/'
+              - "'..' not in git_dest.split('/')"
+              - podman_registry_url is match('^[A-Za-z0-9][A-Za-z0-9.-]*(?::[0-9]+)?$')
+              - oc_api_url is match('^https://[A-Za-z0-9.-]+(?::[0-9]+)?/?$')
+              - "'example.com' not in oc_api_url"
+              - oc_token is match('^\S+$')
+              - podman_registry_username is match('^\S+$')
+              - oc_cli_download_url == 'https://mirror.openshift.com/pub/openshift-v4/x86_64/clients/ocp/' ~ oc_version ~ '/openshift-client-linux.tar.gz'
+            quiet: true
+
+        - name: Validate exact version numbers
+          ansible.builtin.assert:
+            that:
+              - item is match('^[0-9]+\.[0-9]+\.[0-9]+$')
+            quiet: true
+          loop:
+            - "{{ git_version }}"
+            - "{{ podman_version }}"
+            - "{{ python_version }}"
+            - "{{ oc_version }}"
+      rescue:
+        - name: Stop on invalid inputs
+          ansible.builtin.fail:
+            msg: >-
+              Input wajib kosong/tidak sesuai tipe:
+              {{ required_input_checks.results | default([])
+                 | selectattr('failed', 'defined') | selectattr('failed')
+                 | map(attribute='item') | list | join(', ')
+                 | default('tidak ada; periksa format input berikut', true) }}.
+              Input tidak valid. Periksa ansible_user, URL Git HTTPS tanpa kredensial,
+              path absolut, hostname registry, username/password registry,
+              URL API OpenShift asli, token, dan versi X.Y.Z. Semua wajib diisi.
+              Nilai rahasia sengaja tidak ditampilkan.
+          no_log: false
+      no_log: true
+
+  tasks:
+
+    # --- Install ---
+    - name: Install git, podman and python3
+      ansible.builtin.dnf:
+        name:
+          - "git-{{ git_version }}"
+          - "podman-{{ podman_version }}"
+          - "python3-{{ python_version }}"
+        state: present
+        allow_downgrade: true
+      become: true
+
+    - name: Download oc CLI
+      ansible.builtin.get_url:
+        url: "{{ oc_cli_download_url }}"
+        dest: "/tmp/openshift-client-{{ oc_version }}-linux.tar.gz"
+        mode: "0644"
+
+    - name: Extract oc to /usr/local/bin
+      ansible.builtin.unarchive:
+        src: "/tmp/openshift-client-{{ oc_version }}-linux.tar.gz"
+        dest: "/usr/local/bin"
+        remote_src: true
+        mode: "0755"
+      become: true
+
+    # --- Validate ---
+    - name: Check versions of all tools
+      ansible.builtin.command: "{{ item }}"
+      loop:
+        - git --version
+        - podman --version
+        - python3 --version
+        - /usr/local/bin/oc version --client
+      register: tool_versions
+      changed_when: false
+
+    - name: Verify exact installed versions before clone and login
+      ansible.builtin.assert:
+        that:
+          - tool_versions.results[0].stdout | trim == 'git version ' ~ git_version
+          - tool_versions.results[1].stdout | trim == 'podman version ' ~ podman_version
+          - tool_versions.results[2].stdout | trim == 'Python ' ~ python_version
+          - "('Client Version: ' ~ oc_version) in tool_versions.results[3].stdout.splitlines()"
+        fail_msg: "Versi tool tidak sesuai pin. Clone dan login dihentikan."
+
+    - name: Show installed versions
+      ansible.builtin.debug:
+        msg: "{{ tool_versions.results | map(attribute='stdout') | list }}"
+
+    # --- git clone ---
+    - name: Clone the git repository
+      ansible.builtin.git:
+        repo: "{{ git_repo_url }}"
+        dest: "{{ git_dest }}"
+
+    # --- podman login ---
+    - name: Log in to the container registry with podman
+      ansible.builtin.command:
+        argv:
+          - podman
+          - login
+          - "{{ podman_registry_url }}"
+          - --username
+          - "{{ podman_registry_username }}"
+          - --password-stdin
+        stdin: "{{ podman_registry_password }}"
+        stdin_add_newline: false
+      no_log: true
+
+    # --- oc login ---
+    - name: Log in to the OpenShift cluster with oc
+      ansible.builtin.command:
+        argv:
+          - /usr/local/bin/oc
+          - login
+          - "{{ oc_api_url }}"
+          - "--token={{ oc_token }}"
+      no_log: true
+
+    - name: Confirm oc login
+      ansible.builtin.command: /usr/local/bin/oc whoami
+      register: oc_whoami
+      changed_when: false
+      when: oc_token | length > 0
+
+    - name: Show oc login identity
+      ansible.builtin.debug:
+        msg: "Logged in as {{ oc_whoami.stdout }}"
+      when: oc_token | length > 0

@@ -1,0 +1,24 @@
+[Unit]
+Description=Bootcamp self-managed MongoDB
+Wants=network-online.target
+After=network-online.target
+
+[Container]
+Image={{ mongodb_image }}
+ContainerName=bootcamp-mongodb
+PublishPort={{ mongodb_bind_ip }}:{{ mongodb_port }}:27017
+Volume=bootcamp-mongodb-data.volume:/data/db
+Volume=/etc/bootcamp-mongodb/admin-user:/bootstrap/admin-user:ro,Z
+Volume=/etc/bootcamp-mongodb/admin-password:/bootstrap/admin-password:ro,Z
+Volume=/etc/bootcamp-mongodb/credentials.json:/bootstrap/credentials.json:ro,Z
+Volume=/etc/bootcamp-mongodb/ensure-user.js:/bootstrap/ensure-user.js:ro,Z
+Environment=MONGO_INITDB_ROOT_USERNAME_FILE=/bootstrap/admin-user
+Environment=MONGO_INITDB_ROOT_PASSWORD_FILE=/bootstrap/admin-password
+Exec=mongod --auth --bind_ip_all
+
+[Service]
+Restart=on-failure
+TimeoutStartSec=300
+
+[Install]
+WantedBy=multi-user.target

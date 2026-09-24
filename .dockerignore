@@ -1,0 +1,11 @@
+venv/
+Containerfile
+.venv/
+.tools/
+.git/
+__pycache__/
+**/__pycache__/
+.env
+.env.*
+manifest/
+*.auth.json

@@ -1,0 +1,15 @@
+# Alamat HTTPS dibuat otomatis oleh OpenShift untuk Service my-container.
+apiVersion: route.openshift.io/v1
+kind: Route
+metadata:
+  name: my-container
+  namespace: nabilahsafa-dev
+spec:
+  to:
+    kind: Service
+    name: my-container
+  port:
+    targetPort: 8000
+  tls:
+    termination: edge
+    insecureEdgeTerminationPolicy: Redirect
