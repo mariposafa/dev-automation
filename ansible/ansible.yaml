@@ -6,7 +6,7 @@
   become: true
   any_errors_fatal: true
   vars:
-    mongodb_image: docker.io/library/mongo:8.0.28
+    mongodb_image: docker.io/library/mongo:7.0.28
     mongodb_database: bootcamp
     mongodb_admin_user: bootcamp_admin
     mongodb_app_user: bootcamp_app
